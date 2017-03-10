@@ -39,7 +39,7 @@ class SchemaGenerator implements SchemaGeneratorInterface
             FROM information_schema.columns as c
             LEFT JOIN information_schema.key_column_usage as kcu
             ON c.table_name = kcu.table_name AND c.column_name = kcu.column_name
-            AND c.table_schema = kcu.table_schema AND kcu.contraint_name = 'PRIMARY'
+            AND c.table_schema = kcu.table_schema AND kcu.constraint_name = 'PRIMARY'
             WHERE c.table_schema = database();
         ");
         
