@@ -10,7 +10,7 @@ use HodgePodge\Core\Cache;
 
 class Schema
 {
-    const CURRENT_VERSION = 7;
+    const CURRENT_VERSION = 8;
 
     // Cache Bridge
     protected static $cache = '\\Automatorm\\Cache\\HodgePodgeCache';

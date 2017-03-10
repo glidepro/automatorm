@@ -5,36 +5,21 @@ use Automatorm\Exception;
 
 class Data
 {
-    protected $__data = array();     // Data from columns on this table
-    protected $__external = array(); // Links to foreign key objects
-    protected $__schema;             // Schema object for this database
-    protected $__namespace;          // Namespace of the Model for this data - used to find Schema again
-    protected $__table;              // Class this data is associated with
-    protected $__model;              // Fragment of Schema object for this table
-    protected $__locked = true;      // Can we use __set() - for updates/inserts
-    protected $__new = false;        // Is this to be a new row? (used with Model::new_db())
-    protected $__delete = false;     // Row is marked for deletion
-    
-    protected static $__instance = [];
-    
+    protected $__data = [];      // Data from columns on this table
+    protected $__external = [];  // Links to foreign key objects
+    protected $__schema;         // Schema object for this database
+    protected $__namespace;      // Namespace of the Model for this data - used to find Schema again
+    protected $__table;          // Class this data is associated with
+    protected $__model;          // Fragment of Schema object for this table
+    protected $__primaryKey;     // Name of the primary key for this table
+    protected $__primaryId;      // Value of the primary key for this table
+    protected $__locked = true;  // Can we use __set() - for updates/inserts
+    protected $__new = false;    // Is this to be a new row? (used with Model::new_db())
+    protected $__delete = false; // Row is marked for deletion
+       
     public static function make(array $data, $table, Schema $schema)
     {
-        $key = $data['id'] . ':' . $table . ':' . $schema->namespace;
-        
-        if (isset(static::$__instance[$key])) {
-            $obj = static::$__instance[$key];
-        } else {
-            $obj = static::$__instance[$key] = new static($data, $table, $schema, true, false);
-        }
-        
-        return $obj;
-    }
-    
-    public static function updateCache(Data $db)
-    {
-        $db->lock();
-        $key = $db->data['id'] . ':' . $db->table . ':' . $db->schema->namespace;
-        return static::$__instance[$key] = $db;
+        return new static($data, $table, $schema, true, false);
     }
     
     public function __construct(array $data, $table, Schema $schema, $locked = true, $new = false)
@@ -43,6 +28,7 @@ class Data
         $this->__schema = $schema;
         $this->__namespace = $schema->namespace;
         $this->__model = $schema->getTable($table);
+        $this->__primaryKey = $this->__model['primary'];
         $this->__locked = $locked;
         $this->__new = $new;
         
@@ -59,6 +45,8 @@ class Data
                 $this->__data[$key] = $value;
             }
         }
+
+        $this->__primaryId = $this->__data[$this->__primaryKey];
     }
     
     // Generally used when this class is accessed through $modelobject->db()
@@ -75,7 +63,7 @@ class Data
         $clone = clone $this;
         $clone->__new = true;
         $clone->__delete = false;
-        unset($clone->__data['id']);
+        unset($clone->__data[$clone->__primary]);
         return $clone;
     }
     
@@ -135,10 +123,11 @@ class Data
         
         /* FOREIGN KEYS */
         if (key_exists($var, (array) $proto->__model['one-to-one'])) {
-            $ids = $collection->id->toArray();
+            $ids = $collection->_id->toArray();
             
             /* Call Tablename::factory(foreign key id) to get the object we want */
             $table = $proto->__model['one-to-one'][$var];
+            
             $results = Model::factoryObjectCache($ids, $table, $proto->__schema);
             
             return $results;
@@ -148,10 +137,11 @@ class Data
             // Remove duplicates from the group
             $ids = array_unique($collection->{$var . '_id'}->toArray());
             
-            /* Call Tablename::factoryObjectCache(foreign key ids) to makes sure all the objects we want are in the instance cache */
             $table = $proto->__model['many-to-one'][$var];
-
+            $tableDef = $proto->__schema->getTable($table);
+            
             if (!$where) {
+                /* Call Tablename::factoryObjectCache(foreign key ids) to makes sure all the objects we want are in the instance cache */
                 $results = Model::factoryObjectCache($ids, $table, $proto->__schema);
                 
                 // Store the object results on the relevant objects
@@ -161,7 +151,7 @@ class Data
                 
                 return $results;
             } else {
-                $results = Model::factory($where + ['id' => $ids], $table, $proto->__schema);
+                $results = Model::factory($where + [$tableDef['primary'] => $ids], $table, $proto->__schema);
                 
                 return $results;
             }
@@ -172,7 +162,7 @@ class Data
             $table = $proto->__model['one-to-many'][$var]['table'];
             $column = $proto->__model['one-to-many'][$var]['column_name'];
             
-            $ids = $collection->id->toArray();
+            $ids = $collection->_id->toArray();
             
             // Use the model factory to find the relevant items
             $results = Model::factory($where + [$column => $ids], $table, $proto->__schema);
@@ -184,7 +174,7 @@ class Data
                 }
                 
                 foreach ($collection as $obj) {
-                    $obj->_data->__external[$var] = new Collection((array) $external[$obj->id]);
+                    $obj->_data->__external[$var] = new Collection((array) $external[$obj->_id]);
                 }
             }
             
@@ -196,7 +186,7 @@ class Data
             // Get pivot schema
             $pivot = $proto->__model['many-to-many'][$var];
             
-            $ids = $collection->id->toArray();
+            $ids = $collection->_id->toArray();
             
             // We can only support simple connection access for 2 key pivots.
             if (count($pivot['connections']) != 1) {
@@ -219,7 +209,7 @@ class Data
             $grouped_ids = [];
             foreach ($raw as $raw_id) {
                 $flat_ids[] = $raw_id[$pivot['connections'][0]['column']];
-                $grouped_ids[$raw_id[$pivot['id']]][] = $raw_id[$pivot['connections'][0]['column']];
+                $grouped_ids[$raw_id[$pivot['primary']]][] = $raw_id[$pivot['connections'][0]['column']];
             }
             
             // Remove duplicates to make sql call smaller.
@@ -233,7 +223,7 @@ class Data
             // all of the possible objects were returned in the call above.
             if (!$where) {
                 foreach ($collection as $obj) {
-                    $data = Model::factoryObjectCache($grouped_ids[$obj->id], $pivot['connections'][0]['table'], $proto->__schema);
+                    $data = Model::factoryObjectCache($grouped_ids[$obj->_id], $pivot['connections'][0]['table'], $proto->__schema);
                     $obj->_data->__external[$var] = $data ?: new Collection;
                 }
             }
@@ -254,12 +244,13 @@ class Data
         
         /* FOREIGN KEYS */
         if (key_exists($var, (array) $proto->__model['one-to-one'])) {
-            $ids = $collection->id->toArray();
+            $ids = $collection->_id->toArray();
             
             /* Call Tablename::factory(foreign key id) to get the object we want */
             $table = $proto->__model['many-to-one'][$var];
+            $tableDef = $proto->__schema->getTable($table);
             
-            list($data) = Model::factoryDataCount(['id' => $ids] + $where, $table, $proto->__schema);
+            list($data) = Model::factoryDataCount([$tableDef['primary'] => $ids] + $where, $table, $proto->__schema);
             return $data['count'];
         }
         
@@ -269,7 +260,8 @@ class Data
             
             /* Call Tablename::factory(foreign key id) to get the object we want */
             $table = $proto->__model['many-to-one'][$var];
-            list($data) = Model::factoryDataCount(['id' => $ids] + $where, $table, $proto->__schema);
+            $tableDef = $proto->__schema->getTable($table);
+            list($data) = Model::factoryDataCount([$tableDef['primary'] => $ids] + $where, $table, $proto->__schema);
             return $data['count'];
         }
         
@@ -278,7 +270,7 @@ class Data
             $table = $proto->__model['one-to-many'][$var]['table'];
             $column = $proto->__model['one-to-many'][$var]['column_name'];
             
-            $ids = $collection->id->toArray();
+            $ids = $collection->_id->toArray();
             
             // Use the model factory to find the relevant items
             list($data) = Model::factoryDataCount([$column => $ids] + $where, $table, $proto->__schema);
@@ -290,7 +282,7 @@ class Data
             // Get pivot schema
             $pivot = $proto->__model['many-to-many'][$var];
             
-            $ids = $collection->id->toArray();
+            $ids = $collection->_id->toArray();
             
             // We can only support simple connection access for 2 key pivots.
             if (count($pivot['connections']) != 1) {
@@ -317,8 +309,9 @@ class Data
             // Remove duplicates to make sql call smaller.
             $flat_ids = array_unique($flat_ids);
             
+            $tableDef = $proto->__schema->getTable($pivot['connections'][0]['table']);
             // Use the model factory to retrieve the objects from the list of ids (using cache first)
-            list($data) = Model::factoryDataCount(['id' => $flat_ids] + $where, $pivot['connections'][0]['table'], $proto->__schema);
+            list($data) = Model::factoryDataCount([$tableDef['primary'] => $flat_ids] + $where, $pivot['connections'][0]['table'], $proto->__schema);
             return $data['count'];
         }
     }
@@ -340,7 +333,7 @@ class Data
         }
         
         // If this Model_Data isn't linked to the db yet, then linked values cannot exist
-        if (!$id = $this->__data['id']) {
+        if (!$id = $this->__primaryId) {
             return new Collection();
         }
         
@@ -406,7 +399,7 @@ class Data
             $raw = $this->getDataAccessor()->getM2MData(
                 $pivot_tablename,
                 $pivot,
-                $this->__data['id'],
+                $this->__primaryId,
                 null,
                 $clauses
             );
@@ -440,7 +433,7 @@ class Data
         }
         
         // If this Model_Data isn't linked to the db yet, then linked values cannot exist
-        if (!$id = $this->__data['id']) {
+        if (!$id = $this->__primaryId) {
             return 0;
         }
         
@@ -501,7 +494,7 @@ class Data
             $raw = $this->getDataAccessor()->getM2MData(
                 $pivot_tablename,
                 $pivot,
-                $this->__data['id'],
+                $this->__primaryId,
                 null,
                 $clauses
             );
@@ -555,7 +548,7 @@ class Data
         
         // Cannot update primary key on existing objects
         // (and cannot set id for new objects that don't have a foreign primary key)
-        if ($var == 'id' && $this->__new == false && $this->__model['type'] != 'foreign') {
+        if ($var == $this->__primaryKey && $this->__new == false && $this->__model['type'] != 'foreign') {
             throw new Exception\Model('MODEL_DATA:CANNOT_CHANGE_ID', array($var, $value));
         }
         
@@ -607,7 +600,7 @@ class Data
                 if ($value_table !== $expected_table) {
                     throw new Exception\Model('MODEL_DATA:INCORRECT_MODEL_FOR_RELATIONSHIP', [$var, $value_table, $expected_table]);
                 }
-                $this->__data[$var.'_id'] = $value->id;
+                $this->__data[$var.'_id'] = $value->_id;
                 $this->__external[$var] = $value;
                 return;
             } else {
@@ -662,7 +655,7 @@ class Data
         $id = $this->getDataAccessor()->commit(
             $mode,
             $this->__table,
-            $this->__data['id'],
+            $this->__primaryId,
             $this->__data,
             $this->__external,
             $this->__model
@@ -674,6 +667,11 @@ class Data
     }
   
     // Get the table that this object is attached to.
+    public function getPrimaryId()
+    {
+        return $this->__primaryId;
+    }
+    
     public function getTable()
     {
         return $this->__table;

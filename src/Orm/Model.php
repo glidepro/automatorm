@@ -103,6 +103,7 @@ class Model implements \JsonSerializable
         $schema = $schema ?: Schema::get(static::getNamespace());
         list($class, $table) = $schema->guessContext($classOrTablename ?: get_called_class());
         $namespace = $schema->namespace;
+        $model = $schema->getTable($table);
         
         // Get data from database
         $data = Model::factoryData($where, $table, $schema, $options);
@@ -116,7 +117,7 @@ class Model implements \JsonSerializable
         $collection = new Collection();
         
         foreach ($data as $row) {
-            if (!$obj = Model::$instance[$namespace][$table][$row['id']]) {
+            if (!$obj = Model::$instance[$namespace][$table][$row[$model['primary']]]) {
                 // Database data object unique to this object
                 $dataObj = Data::make($row, $table, $schema);
                 
@@ -124,7 +125,7 @@ class Model implements \JsonSerializable
                 $obj = new $class($dataObj);
                 
                 // Store it in the object cache.
-                Model::$instance[$namespace][$table][$row['id']] = $obj;
+                Model::$instance[$namespace][$table][$row[$model['primary']]] = $obj;
                 
                 // Call Model objects _init() function - this is to avoid recursion issues with object's natural constructor and the cache above
                 $obj->_init();
@@ -148,6 +149,7 @@ class Model implements \JsonSerializable
         $schema = $schema ?: Schema::get(static::getNamespace());
         list($class, $table) = $schema->guessContext($classOrTable ?: get_called_class());
         $namespace = $schema->namespace;
+        $model = $schema->getTable($table);
         
         // If we have a single id
         if (is_numeric($ids)) {
@@ -159,7 +161,7 @@ class Model implements \JsonSerializable
             }
             
             /* Cache miss, so create new object */
-            return static::factory(['id' => $ids], $classOrTable, $schema, ['limit' => 1], true);
+            return static::factory([$model['primary'] => $ids], $classOrTable, $schema, ['limit' => 1], true);
         
         // Else if we have an array of ids
         } elseif (is_array($ids)) {
@@ -184,7 +186,7 @@ class Model implements \JsonSerializable
             
             // For any ids we failed to pull out the cache, pull them from the database instead
             if (count($ids) > 0) {
-                $newresults = static::factory(['id' => $ids], $classOrTable, $schema);
+                $newresults = static::factory([$model['primary'] => $ids], $classOrTable, $schema);
                 $collection = $collection->merge($newresults);
             }
             
@@ -235,7 +237,7 @@ class Model implements \JsonSerializable
             if (!$parentObject) {
                 throw new Exception\Model('NO_PARENT_OBJECT', [$namespace, $class, $table, static::$tablename]);
             }
-            $data->id = $parentObject->id;
+            $data->_id = $parentObject->_id;
         }
         
         return $data;
@@ -268,7 +270,7 @@ class Model implements \JsonSerializable
     /*        OBJECT METHODS         */
     ///////////////////////////////////
     
-    protected $id;                // Id of the table row this object represents
+    protected $_id;               // Id of the table row this object represents
     protected $table;             // Name of db table relating to this object
     protected $namespace;         // Namespace (incase this is a pure Model object)
 
@@ -287,7 +289,7 @@ class Model implements \JsonSerializable
     {
         // Together the table and id identify a unique row in the database
         $this->_data = $data;
-        $this->id = $data->id;
+        $this->_id = $data->getPrimaryId();
         $this->table = $data->getTable();
         $this->namespace = $data->getNamespace();
     }
@@ -343,7 +345,7 @@ class Model implements \JsonSerializable
     // [FIXME] Is it actually safe to return ids for all objects, or do we want to even obfuscate this?
     public function jsonSerialize()
     {
-        return ['id' => $this->id];
+        return ['_id' => $this->_id];
     }
     
     // Because we usually reconstruct the object from the db when it leaves the session,
@@ -355,7 +357,7 @@ class Model implements \JsonSerializable
     
     public function __sleep()
     {
-        $properties = ['id', 'table', 'namespace'];
+        $properties = ['_id', 'table', 'namespace'];
         if ($this->cache) {
             $properties[] = '_data';
         }
@@ -367,7 +369,7 @@ class Model implements \JsonSerializable
     public function __wakeup()
     {
         // Store the object in the object cache
-        Model::$instance[$this->namespace][$this->table][strtolower(get_called_class())][$this->id] = $this;
+        Model::$instance[$this->namespace][$this->table][strtolower(get_called_class())][$this->_id] = $this;
         
         if (!$this->_data) {
             // If we don't have a data object, then this object wasn't cached, regenerate the Data object.
@@ -392,7 +394,7 @@ class Model implements \JsonSerializable
     // Swap out the Data object in this Model for an updated one (i.e. after doing an update)
     final public function dataUpdate(Data $db)
     {
-        $this->_data = Data::updateCache($db);
+        $this->_data = $db->lock();
         $this->dataClearCache();
     }
 
@@ -403,7 +405,7 @@ class Model implements \JsonSerializable
         
         // Clean out cached column data
         foreach ($modelschema['columns'] as $column => $type) {
-            if ($column != 'id' && property_exists($this, $column)) {
+            if ($column != $modelschema['primary'] && property_exists($this, $column)) {
                 unset($this->{$column});
             }
         }
@@ -419,7 +421,7 @@ class Model implements \JsonSerializable
         // Clean out cached external data
         $foreignkeys = (array) $modelschema['one-to-one'] + (array) $modelschema['one-to-many'] + (array) $modelschema['many-to-many'] + (array) $modelschema['many-to-one'];
         foreach ($foreignkeys as $column => $value) {
-            if ($column && $column != 'id') {
+            if ($column && $column != $modelschema['primary']) {
                 unset($this->{$column});
             }
         }
@@ -430,7 +432,8 @@ class Model implements \JsonSerializable
     final public function dataRefresh()
     {
         $schema = Schema::get($this->namespace);
-        list($data) = Model::factoryData(['id' => $this->id], $this->table, $schema);
+        $model = $schema->getTable($this->table);
+        list($data) = Model::factoryData([$model['primary'] => $this->_id], $this->table, $schema);
         
         // Database data object unique to this object
         $this->_data = new Data($data, $this->table, $schema);

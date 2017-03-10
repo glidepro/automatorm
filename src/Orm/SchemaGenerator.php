@@ -27,15 +27,20 @@ class SchemaGenerator implements SchemaGeneratorInterface
         // Get a list of all foreign keys in this database
         $query = new Query($connection);
         $query->sql("
-            SELECT b.table_name, b.column_name, b.referenced_table_name, b.referenced_column_name
-            FROM information_schema.table_constraints a 
-            JOIN information_schema.key_column_usage b
-            ON a.table_schema = b.table_schema AND a.constraint_name = b.constraint_name
-            WHERE a.table_schema = database() AND a.constraint_type = 'FOREIGN KEY'
-            ORDER BY b.table_name, b.constraint_name;"
+            SELECT col.table_name, col.column_name, col.referenced_table_name, col.referenced_column_name
+            FROM information_schema.table_constraints as tab 
+            JOIN information_schema.key_column_usage as col
+            ON tab.table_schema = col.table_schema AND tab.constraint_name = col.constraint_name
+            WHERE tab.table_schema = database() AND tab.constraint_type = 'FOREIGN KEY'
+            ORDER BY col.table_name, col.constraint_name;"
         );
         $query->sql("
-            SELECT table_name, column_name, data_type FROM information_schema.columns where table_schema = database();
+            SELECT c.table_name, c.column_name, c.data_type, kcu.constraint_name
+            FROM information_schema.columns as c
+            LEFT JOIN information_schema.key_column_usage as kcu
+            ON c.table_name = kcu.table_name AND c.column_name = kcu.column_name
+            AND c.table_schema = kcu.table_schema AND kcu.contraint_name = 'PRIMARY'
+            WHERE c.table_schema = database();
         ");
         
         list($keys, $schema) = $query->execute();
@@ -49,6 +54,11 @@ class SchemaGenerator implements SchemaGeneratorInterface
             $model[$tableName]['type'] = 'table';
             // List all columns for this table
             $model[$tableName]['columns'][$row['column_name']] = $row['data_type'];
+            // List primary keys for this table
+            $model[$tableName]['primary'] = $row['column_name'];
+            if ($row['constraint_name']) {
+                $model[$tableName]['primary_keys'][] = $row['column_name'];
+            }
         }
         
         // Loop over every foreign key definition
@@ -86,8 +96,11 @@ class SchemaGenerator implements SchemaGeneratorInterface
         
         // Now look for pivot tables
         foreach ($model as $pivottablename => $pivot) {
-            // If we have found a table with only foreign keys then this must be a pivot table
-            if (count($pivot['many-to-one']) > 1 and count($pivot['columns']) == count($pivot['many-to-one'])) {
+            // If we have found a table with only foreign keys and only primary keys then this must be a pivot table
+            if (count($pivot['many-to-one']) > 1
+                and count($pivot['columns']) == count($pivot['many-to-one'])
+                and count($pivot['columns']) == count($pivot['primary_keys'])
+            ) {
                 // Grab all foreign keys and rearrange them into arrays.
                 $tableinfo = array();
                 foreach ($pivot['many-to-one'] as $column => $tablename) {
@@ -113,7 +126,7 @@ class SchemaGenerator implements SchemaGeneratorInterface
                     $model[ $table['table'] ][ 'many-to-many' ][ $propertyName ] = array(
                         'pivot' => $pivottablename,
                         'connections' => $othertables,
-                        'id' => $table['column'],
+                        'primary' => $table['column'],
                     );
                 }
                 
